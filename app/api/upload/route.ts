@@ -1,49 +1,65 @@
-import { NextResponse, type NextRequest } from 'next/server'
-import { handleError } from '../utils'
-import { ErrorType } from '@/constant/errors'
-import { getRandomKey } from '@/utils/common'
-import { isNull } from 'lodash-es'
-
-export const runtime = 'edge'
-export const preferredRegion = ['cle1', 'iad1', 'pdx1', 'sfo1', 'sin1', 'syd1', 'hnd1', 'kix1']
-
-const geminiApiKey = process.env.GEMINI_API_KEY as string
-const geminiApiBaseUrl = process.env.GEMINI_API_BASE_URL || 'https://generativelanguage.googleapis.com'
+import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(req: NextRequest) {
-  const searchParams = req.nextUrl.searchParams
-  const uploadType = searchParams.get('uploadType')
-
   try {
-    if (uploadType === 'resumable') {
-      const { fileName, mimeType } = await req.json()
-      const apiKey = getRandomKey(geminiApiKey, true)
-      const response = await fetch(`${geminiApiBaseUrl}/upload/v1beta/files?uploadType=resumable&key=${apiKey}`, {
-        method: 'POST',
-        body: JSON.stringify({
-          file: {
-            displayName: fileName,
-            mimeType,
-          },
-        }),
-      })
-      const sessionUrl = response.headers.get('Location')
-      if (isNull(sessionUrl)) {
-        return NextResponse.json({ code: 50002, message: ErrorType.NoUploadURL }, { status: 500 })
+    // 从环境变量中读取 GitHub 配置
+    // 记得在 .env.local 中设置 GITHUB_PAT, GITHUB_OWNER, GITHUB_REPO
+    const PAT = process.env.GITHUB_PAT;
+    const OWNER = process.env.GITHUB_OWNER;
+    const REPO = process.env.GITHUB_REPO;
+
+    if (!PAT || !OWNER || !REPO) {
+      return NextResponse.json({ error: "GitHub 环境变量未配置" }, { status: 500 });
+    }
+
+    const { content, filename } = await req.json();
+
+    // 构造 GitHub API URL
+    const url = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${filename}`;
+    
+    // GitHub API 需要内容为 Base64 编码
+    const encodedContent = Buffer.from(content).toString('base64');
+
+    // 1. 检查文件是否存在以获取 SHA (用于覆盖更新)
+    let sha = null;
+    const checkRes = await fetch(url, {
+      headers: { 
+        Authorization: `token ${PAT}`,
+        'Accept': 'application/vnd.github.v3+json'
       }
-      const uploadUrl = new URL(sessionUrl)
-      uploadUrl.protocol = req.nextUrl.protocol
-      uploadUrl.host = req.nextUrl.host
-      uploadUrl.pathname = '/api/google/upload/v1beta/files'
-      uploadUrl.searchParams.delete('key')
-      const url = uploadUrl.toString()
-      return NextResponse.json({ url }, { headers: { Location: url } })
-    } else {
-      throw new Error(ErrorType.UnsupportedApiType)
+    });
+    
+    if (checkRes.ok) {
+      const data = await checkRes.json();
+      sha = data.sha;
     }
-  } catch (error) {
-    if (error instanceof Error) {
-      return handleError(error.message)
+
+    // 2. 执行上传 (PUT 请求)
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: {
+        Authorization: `token ${PAT}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Gemini-Next-Chat-Mod',
+        'Accept': 'application/vnd.github.v3+json'
+      },
+      body: JSON.stringify({
+        message: `Sync from Gemini Chat: ${filename}`, // Commit message
+        content: encodedContent,
+        sha: sha // 如果是更新现有文件，必须提供 sha
+      })
+    });
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      throw new Error(`GitHub API Error: ${res.status} ${errorText}`);
     }
+
+    const data = await res.json();
+    return NextResponse.json({ success: true, url: data.content.html_url });
+
+  } catch (error: any) {
+    console.error("Upload failed:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
