@@ -18,6 +18,7 @@ import {
   LoaderCircle,
   CircleCheck,
   Blocks,
+  UploadCloud, // 新增：上传图标
 } from 'lucide-react'
 import { EdgeSpeech } from '@xiangfa/polly'
 import copy from 'copy-to-clipboard'
@@ -83,6 +84,10 @@ function MessageItem(props: Props) {
   const [isCopyed, setIsCopyed] = useState<boolean>(false)
   const [showLightbox, setShowLightbox] = useState<boolean>(false)
   const [lightboxIndex, setLightboxIndex] = useState<number>(0)
+  
+  // ------------------ 新增状态：上传中 ------------------
+  const [isUploading, setIsUploading] = useState<boolean>(false)
+
   const fileList = useMemo(() => {
     return attachments ? attachments.filter((item) => !item.mimeType.startsWith('image/')) : []
   }, [attachments])
@@ -120,6 +125,43 @@ function MessageItem(props: Props) {
     })
     return text
   }, [parts])
+
+  // ------------------ 新增函数：上传到 GitHub ------------------
+  const handleUploadToGithub = useCallback(async () => {
+    if (isUploading || !content) return
+    setIsUploading(true)
+
+    try {
+      // 生成唯一文件名，例如: scans/note-2024-05-20-12-30-00.md
+      const now = new Date()
+      const dateStr = now.toISOString().replace(/[:.]/g, '-').slice(0, 19)
+      const filename = `scans/note-${dateStr}.md`
+
+      // 调用 Next.js 后端 API
+      const res = await fetch('/api/upload-github', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: content,
+          filename: filename
+        })
+      })
+
+      const data = await res.json()
+
+      if (data.success) {
+        alert(`✅ 同步成功！\n文件已上传至 GitHub`)
+      } else {
+        throw new Error(data.error || '上传失败')
+      }
+    } catch (e: any) {
+      console.error(e)
+      alert(`❌ 同步失败: ${e.message}`)
+    } finally {
+      setIsUploading(false)
+    }
+  }, [content, isUploading])
+  // ---------------------------------------------------------
 
   const handleRegenerate = useCallback(
     (id: string) => {
@@ -369,6 +411,23 @@ function MessageItem(props: Props) {
                     <IconButton title={t('edit')} onClick={() => setIsEditing(true)}>
                       <PencilLine className="h-4 w-4" />
                     </IconButton>
+
+                    {/* ------------------ 修改处：添加上传按钮 ------------------ */}
+                    {role === 'model' && content && (
+                      <IconButton 
+                        title="同步到 Obsidian/GitHub" 
+                        onClick={handleUploadToGithub}
+                        disabled={isUploading || !content}
+                      >
+                        {isUploading ? (
+                           <LoaderCircle className="h-4 w-4 animate-spin" />
+                        ) : (
+                           <UploadCloud className="h-4 w-4" />
+                        )}
+                      </IconButton>
+                    )}
+                    {/* ------------------------------------------------------- */}
+
                     <IconButton title={t('copy')} onClick={() => handleCopy()}>
                       {isCopyed ? <CopyCheck className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                     </IconButton>
